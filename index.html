@@ -151,6 +151,7 @@ main{padding-top:calc(var(--hdr) + 8px);padding-bottom:calc(var(--tab) + env(saf
 .pcard .cnt{margin-top:auto;font-size:12px;font-weight:700;color:var(--fg2)}
 .pcard .cnt i{font-style:normal;color:var(--gold)}
 .pcard.wait .ic{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
+.pcard.pattern .ic{background:color-mix(in srgb,var(--s1) 16%,transparent);color:var(--s1)}
 .panel{background:var(--bg2);border:1px solid var(--line);border-radius:16px;padding:12px}
 .panel h3{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--fg3);margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:8px}
 .panel h3 button{font-size:11px;letter-spacing:0;text-transform:none;color:var(--gold);font-weight:600}
@@ -296,6 +297,9 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px}
     <h2 class="sec-h">Screens</h2>
     <p class="sec-p">Each screen is a rule set for one kind of undervaluation. Tap a screen to open it in the screener; Tune edits its thresholds. Your rarity, set and filter choices apply on top.</p>
     <div class="pgrid" id="pgrid"></div>
+    <h2 class="sec-h">Price patterns</h2>
+    <p class="sec-p">Behaviour over the whole history rather than where the price sits today. Recovered lists every card that has ever gone dip → flat base → breakout in the data, sortable by how recently it last happened.</p>
+    <div class="pgrid" id="pgrid-pattern"></div>
     <h2 class="sec-h">Wait, don't buy yet</h2>
     <p class="sec-p">Cheap is not the same as done falling. These screens flag cards where the decline has not shown a floor.</p>
     <div class="pgrid" id="pgrid-wait"></div>
@@ -442,6 +446,46 @@ function stochRsi(a, rn, n, k, d){ const r=rsi(a,rn); const st=new Array(a.lengt
 function boll(a, n, m){ const mid=sma(a,n); const up=new Array(a.length).fill(null), lo=up.slice(); const q=[]; for(let i=0;i<a.length;i++){ if(a[i]==null) continue; q.push(a[i]); if(q.length>n) q.shift(); if(mid[i]==null) continue; let s=0; for(const v of q) s+=(v-mid[i])**2; const sd=Math.sqrt(s/q.length); up[i]=mid[i]+m*sd; lo[i]=mid[i]-m*sd; } return {mid, up, lo}; }
 function drawdown(a, seed){ const o=new Array(a.length).fill(null); let mx=seed||0; for(let i=0;i<a.length;i++){ if(a[i]==null) continue; mx=Math.max(mx,a[i]); o[i]=(a[i]/mx-1)*100; } return o; }
 function lastv(a){ for(let i=a.length-1;i>=0;i--) if(a[i]!=null) return a[i]; return null; }
+// ---- pattern detectors ----
+// zigzag pivots: a reversal counts once price moves thr% against the last extreme
+function zigzag(cl, thrPct){
+  const thr=thrPct/100; const piv=[]; let i0=-1; for(let i=0;i<cl.length;i++){ if(cl[i]!=null){ i0=i; break; } } if(i0<0) return piv;
+  let dir=0, extI=i0, extP=cl[i0];
+  for(let i=i0+1;i<cl.length;i++){ const v=cl[i]; if(v==null) continue;
+    if(dir>=0 && v>extP){ extI=i; extP=v; if(dir===0 && extP>=cl[i0]*(1+thr)){ dir=1; piv.push({i:i0,p:cl[i0],t:'L'}); } continue; }
+    if(dir<=0 && v<extP){ extI=i; extP=v; if(dir===0 && extP<=cl[i0]*(1-thr)){ dir=-1; piv.push({i:i0,p:cl[i0],t:'H'}); } continue; }
+    if(dir===1 && v<=extP*(1-thr)){ piv.push({i:extI,p:extP,t:'H'}); dir=-1; extI=i; extP=v; }
+    else if(dir===-1 && v>=extP*(1+thr)){ piv.push({i:extI,p:extP,t:'L'}); dir=1; extI=i; extP=v; }
+  }
+  if(dir!==0) piv.push({i:extI,p:extP,t:dir===1?'H':'L'});
+  return piv;
+}
+// every dip -> flat base -> breakout episode in the series
+function recoveries(cl, P, priorPeak, priorPeakIdx){
+  const n=cl.length, out=[]; const B=P.baseDays; if(n<B+10) return out;
+  let tb=B;
+  while(tb<n-3){
+    let mn=Infinity, mx=-Infinity, cnt=0; for(let k=tb-B;k<=tb;k++){ const v=cl[k]; if(v==null) continue; cnt++; if(v<mn) mn=v; if(v>mx) mx=v; }
+    if(cnt<B*0.8 || (mx-mn)/mx > P.bandPct/100){ tb++; continue; }   // quick reject: band is even wider measured against the median
+    const seg=[]; for(let k=tb-B;k<=tb;k++) if(cl[k]!=null) seg.push(cl[k]);
+    const sorted=seg.sort((a,b)=>a-b); const med=sorted[sorted.length>>1];
+    if((mx-mn)/med > P.bandPct/100){ tb++; continue; }
+    // breakout: first day within `after` days that clears base*(1+rise)
+    const target=med*(1+P.risePct/100); let bo=-1, pk=-Infinity, pkI=-1;
+    for(let k=tb+1;k<Math.min(n,tb+1+P.afterDays);k++){ const v=cl[k]; if(v==null) continue; if(bo<0 && v>=target) bo=k; if(v>pk){ pk=v; pkI=k; } if(bo>=0 && k>bo+45) break; }
+    if(bo<0){ tb++; continue; }
+    // prior dip: a high before the base at least dip% above the base level
+    const bs=tb-B; let prior=null;
+    for(let k=Math.max(0,bs-200);k<bs;k++){ if(cl[k]!=null && (prior==null||cl[k]>prior)) prior=cl[k]; }
+    if((prior==null || bs<15) && priorPeak && (priorPeakIdx==null || priorPeakIdx<bs)) prior=Math.max(prior||0, priorPeak);
+    if(prior==null || prior < med/(1-P.dipPct/100)){ tb++; continue; }   // drop into the base of at least dip%
+    // extend the base backwards while it stays inside the band
+    let start=bs; while(start>0 && cl[start-1]!=null && Math.abs(cl[start-1]/med-1)<=P.bandPct/200) start--;
+    out.push({start, end:tb, base:med, breakout:bo, peak:pk, peakI:pkI, rise:(pk/med-1)*100, dip:(1-med/prior)*100, baseLen:tb-start+1});
+    tb=pkI+1;
+  }
+  return out;
+}
 function atAgo(cl, n){ if(!cl.length) return null; const i=cl.length-1-n; if(i<0) return null; for(let j=i;j<cl.length-1;j++){ if(cl[j]!=null) return cl[j]; } return null; }
 
 // ---------- launch window & series selection ----------
@@ -495,6 +539,17 @@ function derive(c){
   // trend label
   const c7=st.c7, c30=st.c30;
   d.trend = c.inLaunch? 'launch' : (c7>0 && c30<0)? 'turn' : (c30>5)? 'rise' : (c30<-5 && (c7??0)<=0)? 'fall' : 'flat';
+  // patterns (thresholds come from the tunable screens)
+  const RP=presetParams(PRESETS_BY_ID.recovered), BP=presetParams(PRESETS_BY_ID.baseform), WP=presetParams(PRESETS_BY_ID.whipsaw);
+  const pkIdx = peakDay!=null ? peakDay-h0 : null;
+  const eps=recoveries(cl, {baseDays:RP.baseDays, bandPct:RP.bandPct, risePct:RP.risePct, dipPct:RP.dipPct, afterDays:RP.afterDays}, peak, pkIdx);
+  d.recs=eps; d.recN=eps.length; d.recLast = eps.length? eps[eps.length-1] : null; d.recAgo = d.recLast? (cl.length-1-d.recLast.breakout) : null;
+  // base forming now: last baseDays flat, prior dip, no breakout yet
+  d.baseNow=null; { const B=BP.baseDays; if(cl.length>=B+5){ const seg=cl.slice(-B).filter(v=>v!=null); if(seg.length>=B*0.8){ const so=seg.slice().sort((a,b)=>a-b); const med=so[so.length>>1]; const band=(so[so.length-1]-so[0])/med; let prior=null; for(let k=Math.max(0,cl.length-B-200);k<cl.length-B;k++){ if(cl[k]!=null&&(prior==null||cl[k]>prior)) prior=cl[k]; } if((prior==null||cl.length-B<15) && peak && (pkIdx==null||pkIdx<cl.length-B)) prior=Math.max(prior||0,peak); if(band<=BP.bandPct/100 && prior!=null && prior>=med/(1-BP.dipPct/100) && last<=med*(1+BP.bandPct/200)){ let start=cl.length-B; while(start>0&&cl[start-1]!=null&&Math.abs(cl[start-1]/med-1)<=BP.bandPct/200) start--; d.baseNow={base:med, band:band*100, dip:(1-med/prior)*100, len:cl.length-start}; } } } }
+  // whipsaw: zigzag swings in the window
+  { const win=cl.slice(-WP.windowDays); const off=cl.length-win.length; const piv=zigzag(win, WP.swingPct); const sw=[]; for(let k=1;k<piv.length;k++) sw.push({from:piv[k-1], to:piv[k], mag:(piv[k].p/piv[k-1].p-1)*100});
+    const ups=sw.filter(x=>x.mag>0).length, dns=sw.filter(x=>x.mag<0).length; const gaps=[]; for(let k=1;k<piv.length;k++) gaps.push(piv[k].i-piv[k-1].i);
+    d.zz={pivots:piv.map(x=>Object.assign({},x,{i:x.i+off})), swings:sw.length, ups, dns, avg: sw.length? sw.reduce((a,x)=>a+Math.abs(x.mag),0)/sw.length : 0, span: piv.length>1? piv[piv.length-1].i-piv[0].i : 0, maxGap: gaps.length? Math.max(...gaps) : 0, lastAgo: piv.length? win.length-1-piv[piv.length-1].i : null, win:win.length}; }
   // value score
   const parts=[];
   if(d.chPeak!=null) parts.push(['Depth below peak', clamp(-d.chPeak/70*100,0,100), 30]);
@@ -561,6 +616,15 @@ const PRESETS = [
  {id:'promo', name:'Promo Bargains', desc:'Promos well off their peak.',
   params:[{k:'drop',l:'Below peak at least (%)',d:40},{k:'pmin',l:'Minimum price ($)',d:5}],
   test:(c,p)=> c.r==='P' && c.p>=p.pmin && c.d.chPeak!=null && c.d.chPeak<=-p.drop, sort:{key:'peak',dir:1}, period:'peak'},
+ {id:'recovered', group:'pattern', name:'Recovered', desc:'Fell hard, went flat for weeks, then shot up. Every such episode in the data.',
+  params:[{k:'dipPct',l:'Prior drop into the base at least (%)',d:30},{k:'baseDays',l:'Flat base at least (days)',d:45},{k:'bandPct',l:'Base band width at most (%)',d:20},{k:'risePct',l:'Breakout above base at least (%)',d:25},{k:'afterDays',l:'Breakout within (days) after the base',d:60},{k:'pmin',l:'Minimum price ($)',d:5}],
+  test:(c,p)=> c.p>=p.pmin && c.d.recN>0, sort:{key:'recago',dir:1}, period:'90', recompute:true},
+ {id:'baseform', group:'pattern', name:'Base Forming', desc:'Fell hard and has gone flat, with no breakout yet. The setup before a recovery.',
+  params:[{k:'dipPct',l:'Prior drop into the base at least (%)',d:30},{k:'baseDays',l:'Flat for at least (days)',d:45},{k:'bandPct',l:'Base band width at most (%)',d:20},{k:'pmin',l:'Minimum price ($)',d:5}],
+  test:(c,p)=> c.p>=p.pmin && !!c.d.baseNow, sort:{key:'baselen',dir:-1}, period:'peak', recompute:true},
+ {id:'whipsaw', group:'pattern', name:'Whipsaw', desc:'Keeps swinging hard both ways: down for weeks, up for a week, down again.',
+  params:[{k:'swingPct',l:'Swing size at least (%)',d:15},{k:'minSwings',l:'Swings at least',d:4},{k:'windowDays',l:'Look back (days)',d:365},{k:'pmin',l:'Minimum price ($)',d:10}],
+  test:(c,p)=> c.p>=p.pmin && c.d.zz && c.d.zz.swings>=p.minSwings && c.d.zz.ups>=2 && c.d.zz.dns>=2 && c.d.zz.span>=c.d.zz.win*0.4 && c.d.zz.maxGap<=c.d.zz.win*0.6, sort:{key:'swings',dir:-1}, period:'90', recompute:true},
  {id:'bleed', wait:true, name:'Steady Bleeders', desc:'Still falling on every horizon. No floor yet.',
   params:[{k:'d30',l:'30d at or below (%)',d:-10},{k:'d90',l:'90d at or below (%)',d:-20},{k:'d180',l:'180d at or below (%)',d:-30}],
   test:(c,p)=> c.st.c30!=null && c.st.c30<=p.d30 && c.st.c90!=null && c.st.c90<=p.d90 && c.d.ch180!=null && c.d.ch180<=p.d180, sort:{key:'change',dir:1}, period:'180'},
@@ -569,17 +633,20 @@ const PRESETS = [
   test:(c,p)=> c.d.chPeak!=null && c.d.chPeak<=-p.drop && c.st.c7!=null && c.st.c7<=p.d7 && c.st.c30!=null && c.st.c7 < c.st.c30/4, sort:{key:'change',dir:1}, period:'7'},
 ];
 const presetParams = pr => Object.fromEntries(pr.params.map(x=>[x.k, (S.pp[pr.id]||{})[x.k] ?? x.d]));
+const PRESETS_BY_ID = Object.fromEntries(PRESETS.map(p=>[p.id,p]));
 
 // ---------- filtering & sorting ----------
 const SORTS = [
   ['score',-1,'Value score','best first'],['peak',1,'Furthest below peak',''],['change',1,'Biggest drop','over the selected period'],['low',1,'Closest to 1-year low',''],
   ['avg',1,'Most below 90d average',''],['rsi',1,'Lowest RSI',''],['stoch',1,'Lowest Stoch RSI %K',''],['since',-1,'Longest since peak',''],
+  ['recago',1,'Most recent recovery','base-and-breakout, newest first'],['recn',-1,'Most recoveries','episodes in the data'],['swings',-1,'Most swings','whipsaw count'],['baselen',-1,'Longest current base',''],
   ['price',1,'Price','low to high'],['price',-1,'Price','high to low'],['name',1,'Name','A to Z']
 ];
 function sortVal(c, key){
   switch(key){
     case 'score': return c.d.score; case 'peak': return c.d.chPeak; case 'change': return chg(c, S.period, S.mode); case 'low': return c.d.fromLow;
     case 'avg': return c.d.vsAvg90; case 'rsi': return c.d.rsi; case 'stoch': return c.d.sk; case 'since': return c.d.sincePeak;
+    case 'recago': return c.d.recAgo; case 'recn': return c.d.recN||null; case 'swings': return c.d.zz? (c.d.zz.swings||null) : null; case 'baselen': return c.d.baseNow? c.d.baseNow.len : null;
     case 'price': return c.p; case 'name': return c.n; default: return c.p;
   }
 }
@@ -630,6 +697,14 @@ function spark(c){
 // ---------- list ----------
 let CUR=[];
 const TREND = {fall:'Falling', flat:'Flat', turn:'Turning up', rise:'Rising', launch:'Launch window'};
+function patternTag(c){
+  const k=S.sort.key, pr=S.preset;
+  if(k==='recago'||k==='recn'||pr==='recovered'){ const r=c.d.recLast; return r? `<span class="tr" style="color:var(--s1)">↗ ${r.rise.toFixed(0)}% · ${agoStr(c.d.recAgo)}${c.d.recN>1?` · ×${c.d.recN}`:''}</span>` : ''; }
+  if(k==='swings'||pr==='whipsaw'){ const z=c.d.zz; return z&&z.swings? `<span class="tr" style="color:var(--s1)">${z.swings} swings · avg ${z.avg.toFixed(0)}%</span>` : ''; }
+  if(k==='baselen'||pr==='baseform'){ const b=c.d.baseNow; return b? `<span class="tr" style="color:var(--s1)">flat ${b.len}d at ${fmt$(b.base)}</span>` : ''; }
+  return '';
+}
+const agoStr = d => d==null? '—' : d<1? 'today' : d<30? `${d}d ago` : d<365? `${Math.round(d/30)}mo ago` : `${(d/365).toFixed(1)}y ago`;
 function trendChip(c){ return `<span class="tr ${c.d.trend}">${TREND[c.d.trend]}</span>`; }
 function rowHTML(c, extra){
   const v=chg(c,S.period,S.mode); const txt = S.mode==='pct'? fmtP(v) : fmtD$(v); const w=S.watch[c.i];
@@ -637,7 +712,7 @@ function rowHTML(c, extra){
     <img class="thumb" loading="lazy" decoding="async" src="${img(c)}" alt="">
     <div class="cr-mid"><div class="cr-name">${w?'<span style="color:var(--gold)">★ </span>':''}${esc(c.n)}</div>
       <div class="cr-sub"><span class="rar ${c.r}">${RAR[c.r]}</span><span>${esc(c.s)} · ${esc(c.no||'')}</span></div>
-      <div class="cr-meta">${c.d.score!=null? `<span class="score" title="Value score">${c.d.score}<i style="--w:${c.d.score}%"></i></span>`:''}${trendChip(c)}${extra||''}</div></div>
+      <div class="cr-meta">${c.d.score!=null? `<span class="score" title="Value score">${c.d.score}<i style="--w:${c.d.score}%"></i></span>`:''}${trendChip(c)}${extra||patternTag(c)}</div></div>
     <div class="cr-right"><div class="price num">${fmt$(c.p)}</div><div class="pill num ${cls(v)}">${txt}</div>${spark(c)}</div>
   </button>`;
 }
@@ -709,8 +784,8 @@ function openTune(pr){
   const pp=presetParams(pr);
   openSheet(`<h2>${pr.name}</h2><div class="sub">${pr.desc}</div><div class="grp">${pr.params.map(x=>numField('tp-'+x.k, x.l, pp[x.k])).join('')}</div>
    <div class="foot"><button class="btn sec" id="tp-reset">Reset</button><button class="btn" id="tp-apply">Apply</button></div>`);
-  $('#tp-reset').onclick=()=>{ delete S.pp[pr.id]; store.set('pp',S.pp); closeSheet(); refresh(); renderPresets(); };
-  $('#tp-apply').onclick=()=>{ S.pp[pr.id]=Object.fromEntries(pr.params.map(x=>[x.k, +$('#tp-'+x.k).value])); store.set('pp',S.pp); closeSheet(); refresh(); renderPresets(); };
+  $('#tp-reset').onclick=()=>{ delete S.pp[pr.id]; store.set('pp',S.pp); closeSheet(); if(pr.recompute) recompute(); else { refresh(); renderPresets(); } };
+  $('#tp-apply').onclick=()=>{ S.pp[pr.id]=Object.fromEntries(pr.params.map(x=>[x.k, +$('#tp-'+x.k).value])); store.set('pp',S.pp); closeSheet(); if(pr.recompute) recompute(); else { refresh(); renderPresets(); } };
 }
 function applyPreset(pr){
   S.preset=pr.id; if(pr.period) S.period=pr.period; S.sort=Object.assign({},pr.sort); store.set('period',S.period); store.set('sort',S.sort);
@@ -718,11 +793,13 @@ function applyPreset(pr){
   showView('screener'); refresh(); window.scrollTo(0,0);
 }
 const ICON_BUY='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l6 7 4-4 8 9"/><path d="M15 19h6v-6"/></svg>';
+const ICON_PAT='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12h3l2-6 3 12 3-9 2 5 2-2h5"/></svg>';
 const ICON_WAIT='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>';
 function renderPresets(){
   const base = S.cards.filter(c=>passesGeneral(c,S.f));
-  const cardFor = pr => { const pp=presetParams(pr); const n= base.filter(c=>pr.test(c,pp)).length; const tuned=!!S.pp[pr.id]; return `<button class="pcard ${pr.wait?'wait':''}" data-pr="${pr.id}"><div class="ic">${pr.wait?ICON_WAIT:ICON_BUY}</div><b>${pr.name}</b><span>${pr.desc}</span><div class="cnt"><i>${n}</i> cards${tuned?' · tuned':''}</div></button>`; };
-  $('#pgrid').innerHTML = PRESETS.filter(p=>!p.wait).map(cardFor).join('');
+  const cardFor = pr => { const pp=presetParams(pr); const n= base.filter(c=>pr.test(c,pp)).length; const tuned=!!S.pp[pr.id]; return `<button class="pcard ${pr.wait?'wait':''} ${pr.group||''}" data-pr="${pr.id}"><div class="ic">${pr.wait?ICON_WAIT:pr.group?ICON_PAT:ICON_BUY}</div><b>${pr.name}</b><span>${pr.desc}</span><div class="cnt"><i>${n}</i> cards${tuned?' · tuned':''}</div></button>`; };
+  $('#pgrid').innerHTML = PRESETS.filter(p=>!p.wait && !p.group).map(cardFor).join('');
+  $('#pgrid-pattern').innerHTML = PRESETS.filter(p=>p.group==='pattern').map(cardFor).join('');
   $('#pgrid-wait').innerHTML = PRESETS.filter(p=>p.wait).map(cardFor).join('');
   $$('.pcard').forEach(b=>b.onclick=()=>applyPreset(PRESETS.find(p=>p.id===b.dataset.pr)));
 }
@@ -749,12 +826,21 @@ function candlesFor(c, tf){
 }
 
 // ---------- detail ----------
-const DET = {card:null, tf: store.get('tf','D'), type: store.get('ctype','candle'), range: store.get('range','180'), ovl: Object.assign({smaA:true,smaB:false,smaC:false,ema:false,bb:false,peak:true}, store.get('ovl',{})), ind: store.get('ind2','stoch'), main:null, sub:null, table:false, data:[]};
+const DET = {card:null, tf: store.get('tf','D'), type: store.get('ctype','candle'), range: store.get('range','180'), ovl: Object.assign({smaA:true,smaB:false,smaC:false,ema:false,bb:false,peak:true,swings:false,bases:false}, store.get('ovl',{})), ind: store.get('ind2','stoch'), main:null, sub:null, table:false, data:[]};
 function openCard(id){ const c=S.byId[id]; if(!c) return; DET.card=c; DET.table=false; $('#ov-ttl').textContent=c.n; $('#ov').classList.add('on'); $('#ov').scrollTop=0; document.documentElement.style.overflow='hidden'; renderDetail(); if(location.hash!=='#card') history.pushState({card:id},'','#card'); }
 function closeCard(){ $('#ov').classList.remove('on'); document.documentElement.style.overflow=''; dropChart(DET.main); dropChart(DET.sub); DET.main=DET.sub=null; DET.card=null; }
 window.addEventListener('popstate', ()=>{ if(DET.card && location.hash!=='#card') closeCard(); });
 $('#ov-back').onclick=()=>{ if(location.hash==='#card') history.back(); else closeCard(); };
 
+function patternPanel(c){
+  const d=c.d; const parts=[];
+  if(d.recN){ const r=d.recLast; parts.push(`<p><b>Recovered${d.recN>1?` ×${d.recN}`:''}.</b> Most recent: fell ${r.dip.toFixed(0)}% into a base around ${fmt$(r.base)} that held ${r.baseLen} days, then broke out to ${fmt$(r.peak)} (+${r.rise.toFixed(0)}%) ${agoStr(d.recAgo)} (${fmtDate(dayStr(c.v.h0+r.breakout))}).</p>`);
+    if(d.recN>1) parts.push(`<p class="note">Earlier: ${d.recs.slice(0,-1).reverse().map(e=>`${fmtDate(dayStr(c.v.h0+e.breakout))} +${e.rise.toFixed(0)}% after ${e.baseLen}d flat`).join(' · ')}</p>`); }
+  else parts.push(`<p class="note">No dip → flat base → breakout episode in the available history.</p>`);
+  if(d.baseNow){ const b=d.baseNow; parts.push(`<p><b>Base forming now.</b> Flat for ${b.len} days around ${fmt$(b.base)} (±${(b.band/2).toFixed(0)}%) after a ${b.dip.toFixed(0)}% drop. No breakout yet.</p>`); }
+  const z=d.zz; if(z) parts.push(`<p><b>${z.swings} swing${z.swings===1?'':'s'}</b> of ${presetParams(PRESETS_BY_ID.whipsaw).swingPct}%+ in the last ${z.win} days (${z.ups} up, ${z.dns} down), average size ${z.avg.toFixed(0)}%${z.lastAgo!=null?`, last turn ${agoStr(z.lastAgo)}`:''}. Turn on the Swings overlay to see them on the chart.</p>`);
+  return `<div class="about">${parts.join('')}</div>`;
+}
 function scoreRing(score){
   const r=22, cx=26, cy=26, circ=2*Math.PI*r; const pct=(score??0)/100;
   return `<svg viewBox="0 0 52 52" aria-hidden="true"><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--bg3)" stroke-width="5"/><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--gold)" stroke-width="5" stroke-linecap="round" stroke-dasharray="${(circ*pct).toFixed(1)} ${circ.toFixed(1)}" transform="rotate(-90 ${cx} ${cy})"/><text x="${cx}" y="${cy+5}" text-anchor="middle" font-size="15" font-weight="700" fill="var(--fg)">${score==null?'—':score}</text></svg>`;
@@ -783,7 +869,7 @@ function renderDetail(){
     <div id="c-wrap" ${DET.table?'hidden':''}><div class="chart" id="c-main"></div><div class="legend" id="c-legend2" style="padding-top:6px"></div><div class="chart2" id="c-sub"></div></div>
     <div id="c-tablewrap" class="tscroll" ${DET.table?'':'hidden'}></div>
     <div class="ovl" style="margin-top:10px">
-      ${[['smaA','SMA '+I.smaA],['smaB','SMA '+I.smaB],['smaC','SMA '+I.smaC],['ema','EMA '+I.ema],['bb',`BB ${I.bbLen}/${I.bbMult}`],['peak','Peak line']].map(([k,l])=>`<button class="chip sm ${DET.ovl[k]?'on':''}" data-o="${k}">${l}</button>`).join('')}
+      ${[['smaA','SMA '+I.smaA],['smaB','SMA '+I.smaB],['smaC','SMA '+I.smaC],['ema','EMA '+I.ema],['bb',`BB ${I.bbLen}/${I.bbMult}`],['peak','Peak line'],['swings','Swings'],['bases','Bases']].map(([k,l])=>`<button class="chip sm ${DET.ovl[k]?'on':''}" data-o="${k}">${l}</button>`).join('')}
     </div>
     <div class="ovl" style="margin-top:8px">
       ${[['stoch',`Stoch RSI ${I.srRsi}/${I.srLen}/${I.srK}/${I.srD}`],['rsi','RSI '+I.rsi],['dd','Drawdown'],['none','None']].map(([k,l])=>`<button class="chip sm ${DET.ind===k?'on':''}" data-i="${k}">${l}</button>`).join('')}
@@ -794,6 +880,7 @@ function renderDetail(){
    </div>
    <div class="panel"><h3>Why this score</h3><div class="bars">${(d.parts||[]).map(p=>`<div class="brow2"><span>${p[0]}</span><div class="bar"><i style="width:${p[1].toFixed(0)}%"></i></div><b class="num">${p[1].toFixed(0)}</b></div>`).join('')||'<div class="note">Not enough data to score this card.</div>'}</div>
     <div class="note" style="margin-top:8px">${c.inLaunch?'Capped at 30 while the card is inside its launch window. ':''}Weights: depth 30, floor 15, discount 15, exhaustion 15, stopped falling 25. Details under Settings.</div></div>
+   <div class="panel"><h3>Price patterns</h3>${patternPanel(c)}</div>
    <div class="panel"><h3>Key levels</h3><div class="sgrid">
     <div><span>Peak${d.peakSrc==='post-launch'?' (post-launch)':''}</span><b class="num">${fmt$(d.peak)}</b></div><div><span>Peak date</span><b>${fmtDate(d.peakDate)}</b></div>
     <div><span>Below peak</span><b class="num ${cls(d.chPeak)}">${fmtP(d.chPeak)}</b></div><div><span>Days since peak</span><b class="num">${d.sincePeak??'—'}</b></div>
@@ -857,6 +944,10 @@ function renderChart(){
   if(DET.ovl.ema) addLine(ema(closes,I.ema), s4, 'EMA '+I.ema);
   if(DET.ovl.bb){ const b=boll(closes,I.bbLen,I.bbMult); addLine(b.up, css('--fg3'), 'BB upper', 1, 2); addLine(b.lo, css('--fg3'), 'BB lower', 1, 2); }
   if(DET.ovl.peak && c.d.peak){ series.createPriceLine({price:c.d.peak, color:gold, lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'Peak'}); }
+  { const marks=[]; const dayOf=i=>c.v.h0+i; const timeFor=i=>{ const dday=dayOf(i); return DET.tf==='W'? dayBD(dday-(((dday-4)%7)+7)%7) : dayBD(dday); };
+    if(DET.ovl.swings && c.d.zz) c.d.zz.pivots.forEach(p=>marks.push({time:timeFor(p.i), position:p.t==='H'?'aboveBar':'belowBar', color:p.t==='H'?dn:up, shape:p.t==='H'?'arrowDown':'arrowUp', text:fmt$(p.p)}));
+    if(DET.ovl.bases && c.d.recs) c.d.recs.forEach(e=>{ marks.push({time:timeFor(e.start), position:'belowBar', color:s1, shape:'square', text:'base'}); marks.push({time:timeFor(e.breakout), position:'belowBar', color:s1, shape:'arrowUp', text:'breakout'}); });
+    if(marks.length){ const key=t=>t.year*10000+t.month*100+t.day; const have=new Set(data.map(d=>key(d.time))); const ok=marks.filter(m=>have.has(key(m.time))).sort((a,b)=>key(a.time)-key(b.time)); series.setMarkers(ok); } }
   const subSeries=[];
   if(DET.ind!=='none'){
     const sub=mkChart(subEl, {rightPriceScale:{borderColor:css('--line'), scaleMargins:{top:.1,bottom:.1}}, timeScale:{visible:false, borderColor:css('--line')}, localization:{priceFormatter: v => DET.ind==='dd'? v.toFixed(0)+'%' : v.toFixed(0)}}); DET.sub=sub;
