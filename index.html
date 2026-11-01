@@ -245,6 +245,16 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px}
 .opt small{display:block;font-size:12px;color:var(--fg3);font-weight:400;margin-top:1px}
 .glabel{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--fg3);margin:4px 0 -4px}
 
+/* checklist */
+.chk{margin:4px 0 12px}
+.chk-h{display:flex;justify-content:space-between;align-items:baseline;font-size:14px;margin-bottom:6px}
+.chk-h span{font-size:16px;font-weight:700}
+.chk-r{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:8px;align-items:center;font-size:12.5px;padding:5px 0;border-bottom:1px solid var(--line);color:var(--fg2)}
+.chk-r:last-of-type{border-bottom:0}
+.chk-r i{font-style:normal;font-weight:700;color:var(--down)}
+.chk-r.ok i{color:var(--up)}
+.chk-r.ok span{color:var(--fg)}
+.chk-r b{font-weight:600;color:var(--fg3)}
 /* market */
 .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
 .tile{background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:10px}
@@ -307,7 +317,7 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px}
 
   <section class="view" id="v-market">
     <h2 class="sec-h">Market</h2>
-    <p class="sec-p">Where the whole tracked market sits relative to its own history. All figures are Near Mint, across every Enchanted, Iconic and promo card.</p>
+    <p class="sec-p" id="market-intro">Where the whole tracked market sits relative to its own history. All figures are Near Mint, across every Enchanted, Iconic and promo card.</p>
     <div class="tiles" id="tiles"></div>
     <div class="panel">
       <h3>Set index</h3>
@@ -343,6 +353,7 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px}
       <div class="panel" id="p-ind"></div>
       <div class="panel" id="p-spike"></div>
       <div class="panel about" id="p-score"></div>
+      <div class="panel about" id="p-check"></div>
       <div class="panel" id="p-data"></div>
       <div class="panel" id="refresh-panel">
         <h3>Live refresh</h3>
@@ -546,6 +557,14 @@ function derive(c){
   d.recs=eps; d.recN=eps.length; d.recLast = eps.length? eps[eps.length-1] : null; d.recAgo = d.recLast? (cl.length-1-d.recLast.breakout) : null;
   // base forming now: last baseDays flat, prior dip, no breakout yet
   d.baseNow=null; { const B=BP.baseDays; if(cl.length>=B+5){ const seg=cl.slice(-B).filter(v=>v!=null); if(seg.length>=B*0.8){ const so=seg.slice().sort((a,b)=>a-b); const med=so[so.length>>1]; const band=(so[so.length-1]-so[0])/med; let prior=null; for(let k=Math.max(0,cl.length-B-200);k<cl.length-B;k++){ if(cl[k]!=null&&(prior==null||cl[k]>prior)) prior=cl[k]; } if((prior==null||cl.length-B<15) && peak && (pkIdx==null||pkIdx<cl.length-B)) prior=Math.max(prior||0,peak); if(band<=BP.bandPct/100 && prior!=null && prior>=med/(1-BP.dipPct/100) && last<=med*(1+BP.bandPct/200)){ let start=cl.length-B; while(start>0&&cl[start-1]!=null&&Math.abs(cl[start-1]/med-1)<=BP.bandPct/200) start--; d.baseNow={base:med, band:band*100, dip:(1-med/prior)*100, len:cl.length-start}; } } } }
+  // breakout checklist for a base that is forming now (the seven signs that separated pops from breakdowns in the back-test)
+  d.check=null;
+  if(d.baseNow){ const B=BP.baseDays, b=d.baseNow; const win=cl.slice(-B).filter(v=>v!=null); const mn=Math.min(...win), mx=Math.max(...win); const pos= mx>mn? (last-mn)/(mx-mn)*100 : 50;
+    const medOf=a=>{ const x=a.filter(v=>v!=null).sort((p,q)=>p-q); return x.length? x[x.length>>1] : null; }; const mf=medOf(cl.slice(-B,-B+15)), ml=medOf(cl.slice(-15)); const drift= mf? (ml/mf-1)*100 : 0;
+    const bs=cl.length-b.len; let pkI=-1, pkv=-1; for(let k=Math.max(0,bs-200);k<bs;k++){ if(cl[k]!=null&&cl[k]>pkv){ pkv=cl[k]; pkI=k; } } const sincePk = pkI>=0? cl.length-1-pkI : (peakDay!=null? today-peakDay : null);
+    const vsAth = st.ath? (b.base/st.ath-1)*100 : d.chPeak; const isChar=/ - /.test(c.n);
+    const signs=[['Price in upper half of the base', pos>50, pos.toFixed(0)+'% of range'],['Base 50%+ below all-time high', vsAth!=null&&vsAth<=-50, fmtP(vsAth)],['Not sagging (last 2 wks vs first 2)', drift>=-2, fmtP(drift)],['120+ days since the prior high', sincePk!=null&&sincePk>=120, sincePk==null?'—':sincePk+' days'],['Base longer than 50 days', b.len>50, b.len+' days'],['Price between $20 and $150', b.base>=20&&b.base<150, fmt$(b.base)],['Character card (not song/item)', isChar, isChar?'character':'song / item / location']];
+    d.check={signs, n:signs.filter(x=>x[1]).length}; }
   // whipsaw: zigzag swings in the window
   { const win=cl.slice(-WP.windowDays); const off=cl.length-win.length; const piv=zigzag(win, WP.swingPct); const sw=[]; for(let k=1;k<piv.length;k++) sw.push({from:piv[k-1], to:piv[k], mag:(piv[k].p/piv[k-1].p-1)*100});
     const ups=sw.filter(x=>x.mag>0).length, dns=sw.filter(x=>x.mag<0).length; const gaps=[]; for(let k=1;k<piv.length;k++) gaps.push(piv[k].i-piv[k-1].i);
@@ -561,7 +580,10 @@ function derive(c){
   d.parts=parts; d.score = wsum? Math.round(parts.reduce((a,p)=>a+p[1]*p[2],0)/wsum) : null;
   if(c.inLaunch && d.score!=null) d.score=Math.min(d.score, 30);
 }
-function deriveAll(){ S.cards.forEach(derive); }
+function deriveAll(){ S.cards.forEach(derive);
+  const rs=[]; S.cards.forEach(c=>{ const cl=ffill(c.h||[]); const a=atAgo(cl,60); if(a && c.p) rs.push(c.p/a-1); }); rs.sort((a,b)=>a-b);
+  S.market60 = rs.length>30? rs[rs.length>>1]*100 : null; }
+const regimeText = () => S.market60==null? '' : `Median tracked card ${fmtP(S.market60)} over the last 60 days: ${S.market60<-3?'falling market. In the back-test, bases formed in a falling market popped 8% of the time.':S.market60>3?'rising market. In the back-test, bases formed in a rising market popped 79% of the time.':'flat market. Pops have clustered in rising markets (79% vs 8% in falling ones).'}`;
 
 // period change
 function chg(c, period, mode){
@@ -619,9 +641,9 @@ const PRESETS = [
  {id:'recovered', group:'pattern', name:'Recovered', desc:'Fell hard, went flat for weeks, then shot up. Every such episode in the data.',
   params:[{k:'dipPct',l:'Prior drop into the base at least (%)',d:30},{k:'baseDays',l:'Flat base at least (days)',d:45},{k:'bandPct',l:'Base band width at most (%)',d:20},{k:'risePct',l:'Breakout above base at least (%)',d:25},{k:'afterDays',l:'Breakout within (days) after the base',d:60},{k:'pmin',l:'Minimum price ($)',d:5}],
   test:(c,p)=> c.p>=p.pmin && c.d.recN>0, sort:{key:'recago',dir:1}, period:'90', recompute:true},
- {id:'baseform', group:'pattern', name:'Base Forming', desc:'Fell hard and has gone flat, with no breakout yet. The setup before a recovery.',
+ {id:'baseform', group:'pattern', name:'Base Forming', desc:'Fell hard and has gone flat, no breakout yet. Sorted by the 7-sign breakout checklist.',
   params:[{k:'dipPct',l:'Prior drop into the base at least (%)',d:30},{k:'baseDays',l:'Flat for at least (days)',d:45},{k:'bandPct',l:'Base band width at most (%)',d:20},{k:'pmin',l:'Minimum price ($)',d:5}],
-  test:(c,p)=> c.p>=p.pmin && !!c.d.baseNow, sort:{key:'baselen',dir:-1}, period:'peak', recompute:true},
+  test:(c,p)=> c.p>=p.pmin && !!c.d.baseNow, sort:{key:'signs',dir:-1}, period:'peak', recompute:true},
  {id:'whipsaw', group:'pattern', name:'Whipsaw', desc:'Keeps swinging hard both ways: down for weeks, up for a week, down again.',
   params:[{k:'swingPct',l:'Swing size at least (%)',d:15},{k:'minSwings',l:'Swings at least',d:4},{k:'windowDays',l:'Look back (days)',d:365},{k:'pmin',l:'Minimum price ($)',d:10}],
   test:(c,p)=> c.p>=p.pmin && c.d.zz && c.d.zz.swings>=p.minSwings && c.d.zz.ups>=2 && c.d.zz.dns>=2 && c.d.zz.span>=c.d.zz.win*0.4 && c.d.zz.maxGap<=c.d.zz.win*0.6, sort:{key:'swings',dir:-1}, period:'90', recompute:true},
@@ -639,14 +661,14 @@ const PRESETS_BY_ID = Object.fromEntries(PRESETS.map(p=>[p.id,p]));
 const SORTS = [
   ['score',-1,'Value score','best first'],['peak',1,'Furthest below peak',''],['change',1,'Biggest drop','over the selected period'],['low',1,'Closest to 1-year low',''],
   ['avg',1,'Most below 90d average',''],['rsi',1,'Lowest RSI',''],['stoch',1,'Lowest Stoch RSI %K',''],['since',-1,'Longest since peak',''],
-  ['recago',1,'Most recent recovery','base-and-breakout, newest first'],['recn',-1,'Most recoveries','episodes in the data'],['swings',-1,'Most swings','whipsaw count'],['baselen',-1,'Longest current base',''],
+  ['signs',-1,'Breakout checklist','bases with the most signs first'],['recago',1,'Most recent recovery','base-and-breakout, newest first'],['recn',-1,'Most recoveries','episodes in the data'],['swings',-1,'Most swings','whipsaw count'],['baselen',-1,'Longest current base',''],
   ['price',1,'Price','low to high'],['price',-1,'Price','high to low'],['name',1,'Name','A to Z']
 ];
 function sortVal(c, key){
   switch(key){
     case 'score': return c.d.score; case 'peak': return c.d.chPeak; case 'change': return chg(c, S.period, S.mode); case 'low': return c.d.fromLow;
     case 'avg': return c.d.vsAvg90; case 'rsi': return c.d.rsi; case 'stoch': return c.d.sk; case 'since': return c.d.sincePeak;
-    case 'recago': return c.d.recAgo; case 'recn': return c.d.recN||null; case 'swings': return c.d.zz? (c.d.zz.swings||null) : null; case 'baselen': return c.d.baseNow? c.d.baseNow.len : null;
+    case 'signs': return c.d.check? c.d.check.n : null; case 'recago': return c.d.recAgo; case 'recn': return c.d.recN||null; case 'swings': return c.d.zz? (c.d.zz.swings||null) : null; case 'baselen': return c.d.baseNow? c.d.baseNow.len : null;
     case 'price': return c.p; case 'name': return c.n; default: return c.p;
   }
 }
@@ -701,7 +723,7 @@ function patternTag(c){
   const k=S.sort.key, pr=S.preset;
   if(k==='recago'||k==='recn'||pr==='recovered'){ const r=c.d.recLast; return r? `<span class="tr" style="color:var(--s1)">↗ ${r.rise.toFixed(0)}% · ${agoStr(c.d.recAgo)}${c.d.recN>1?` · ×${c.d.recN}`:''}</span>` : ''; }
   if(k==='swings'||pr==='whipsaw'){ const z=c.d.zz; return z&&z.swings? `<span class="tr" style="color:var(--s1)">${z.swings} swings · avg ${z.avg.toFixed(0)}%</span>` : ''; }
-  if(k==='baselen'||pr==='baseform'){ const b=c.d.baseNow; return b? `<span class="tr" style="color:var(--s1)">flat ${b.len}d at ${fmt$(b.base)}</span>` : ''; }
+  if(k==='baselen'||k==='signs'||pr==='baseform'){ const b=c.d.baseNow; return b? `<span class="tr" style="color:var(--s1)">${c.d.check.n}/7 signs · flat ${b.len}d</span>` : ''; }
   return '';
 }
 const agoStr = d => d==null? '—' : d<1? 'today' : d<30? `${d}d ago` : d<365? `${Math.round(d/30)}mo ago` : `${(d/365).toFixed(1)}y ago`;
@@ -837,7 +859,9 @@ function patternPanel(c){
   if(d.recN){ const r=d.recLast; parts.push(`<p><b>Recovered${d.recN>1?` ×${d.recN}`:''}.</b> Most recent: fell ${r.dip.toFixed(0)}% into a base around ${fmt$(r.base)} that held ${r.baseLen} days, then broke out to ${fmt$(r.peak)} (+${r.rise.toFixed(0)}%) ${agoStr(d.recAgo)} (${fmtDate(dayStr(c.v.h0+r.breakout))}).</p>`);
     if(d.recN>1) parts.push(`<p class="note">Earlier: ${d.recs.slice(0,-1).reverse().map(e=>`${fmtDate(dayStr(c.v.h0+e.breakout))} +${e.rise.toFixed(0)}% after ${e.baseLen}d flat`).join(' · ')}</p>`); }
   else parts.push(`<p class="note">No dip → flat base → breakout episode in the available history.</p>`);
-  if(d.baseNow){ const b=d.baseNow; parts.push(`<p><b>Base forming now.</b> Flat for ${b.len} days around ${fmt$(b.base)} (±${(b.band/2).toFixed(0)}%) after a ${b.dip.toFixed(0)}% drop. No breakout yet.</p>`); }
+  if(d.baseNow){ const b=d.baseNow; parts.push(`<p><b>Base forming now.</b> Flat for ${b.len} days around ${fmt$(b.base)} (±${(b.band/2).toFixed(0)}%) after a ${b.dip.toFixed(0)}% drop. No breakout yet.</p>`);
+    if(d.check){ const k=d.check; parts.push(`<div class="chk"><div class="chk-h"><b>Breakout checklist</b><span class="num" style="color:${k.n>=6?'var(--up)':k.n<=2?'var(--down)':'var(--gold)'}">${k.n} / 7</span></div>${k.signs.map(x=>`<div class="chk-r ${x[1]?'ok':''}"><i>${x[1]?'✓':'✗'}</i><span>${x[0]}</span><b class="num">${x[2]}</b></div>`).join('')}
+      <p class="note" style="margin-top:8px">In the back-test, bases with 6–7 signs popped 90% of the time with no breakdowns; bases with 1–2 signs broke down 63–83% of the time. ${regimeText()}</p></div>`); } }
   const z=d.zz; if(z) parts.push(`<p><b>${z.swings} swing${z.swings===1?'':'s'}</b> of ${presetParams(PRESETS_BY_ID.whipsaw).swingPct}%+ in the last ${z.win} days (${z.ups} up, ${z.dns} down), average size ${z.avg.toFixed(0)}%${z.lastAgo!=null?`, last turn ${agoStr(z.lastAgo)}`:''}. Turn on the Swings overlay to see them on the chart.</p>`);
   return `<div class="about">${parts.join('')}</div>`;
 }
@@ -1008,6 +1032,7 @@ function renderMarket(){
   const cards=S.cards.filter(c=>!c.inLaunch);
   const med = arr => { const a=arr.filter(v=>v!=null).sort((x,y)=>x-y); return a.length? a[Math.floor(a.length/2)] : null; };
   const medPeak=med(cards.map(c=>c.d.chPeak)); const nearLow=cards.filter(c=>c.d.fromLow!=null && c.d.fromLow<=10).length; const down30=cards.filter(c=>(c.st.c30??0)<0).length; const medScore=med(cards.map(c=>c.d.score));
+  $('#market-intro').textContent = 'Where the whole tracked market sits relative to its own history. ' + regimeText();
   $('#tiles').innerHTML = `
    <div class="tile"><small>Median below peak</small><b class="num ${cls(medPeak)}">${fmtP(medPeak)}</b><div class="sub">the typical card</div></div>
    <div class="tile"><small>Within 10% of 1Y low</small><b class="num">${Math.round(nearLow/cards.length*100)}%</b><div class="sub">${nearLow} of ${cards.length} cards</div></div>
@@ -1085,6 +1110,10 @@ function renderSettings(){
     <p>A 0–100 ranking of how cheap a card is against its own history, built from five parts. Each part scores 0–100 and they are averaged with these weights:</p>
     <p><b>Depth below peak · 30.</b> 0 at the peak, 100 at 70% or more below it.<br><b>Near the 1-year low · 15.</b> 100 at the low, 0 when 40% or more above it.<br><b>Discount to 90-day average · 15.</b> 100 at 25% below the average, 0 at or above it.<br><b>Exhaustion · 15.</b> Average of RSI (100 at 15, 0 at 55) and Stoch RSI %K (100 at 0, 0 at 60).<br><b>Fall has stopped · 25.</b> 40 points if the 7-day change is flat or up, 35 if the 30-day change is better than −5%, 25 if the card has held above its 1-year low for two weeks.</p>
     <p>Parts that cannot be computed (not enough history) are dropped and the rest re-weighted. A high score means "beaten down and stabilising", not "guaranteed to recover".</p>`;
+  $('#p-check').innerHTML=`<h3>Breakout checklist</h3>
+    <p>Built from a back-test of 281 flat bases (45+ days within a 20% band after a 30%+ drop) across 151 cards in the year of data: 49% went on to pop 25%+ within 120 days, 34% broke down 15%+, 17% stayed flat. Seven things measurable during the base separated the two groups in both the rising and falling halves of the year:</p>
+    <p><b>1.</b> Price in the upper half of the base's own range. <b>2.</b> Base at least 50% below the all-time high (bases near the ATH almost never popped). <b>3.</b> Not sagging: the last two weeks of the base at or above the first two. <b>4.</b> 120+ days since the prior high (bases right after a drop are pauses, not bottoms). <b>5.</b> Base longer than 50 days. <b>6.</b> Price between $20 and $150. <b>7.</b> A character rather than a song, item or location.</p>
+    <p>Bases with 6–7 signs popped 90% of the time with zero breakdowns; bases with 1–2 signs broke down 63–83% of the time. <b>The market decides the rate</b>: bases formed Feb–Jun 2026 popped 79% of the time, bases formed Jul–Dec popped 8%. Use the count to rank bases, not as odds. One year of data is one market cycle.</p>`;
   const gen=S.data? new Date(S.data.generated*1000) : null; const maxDays=S.cards.length? Math.max(...S.cards.map(c=>(c.h||[]).length)) : 0;
   $('#p-data').innerHTML=`<h3>Data</h3>
     <div class="kv"><span>Prices from</span><b>TCGplayer market price via JustTCG</b></div>
